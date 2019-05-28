@@ -1,142 +1,256 @@
-# Specify the provider and access details
+#################################
+## PROVIDER		                 ##
+#################################
+
 provider "aws" {
-  region = "${var.aws_region}"
+  access_key = "${var.aws_access_key}"
+  secret_key = "${var.aws_secret_key}"
+  region     = "${var.aws_region}"
 }
 
-# Create a VPC to launch our instances into
-resource "aws_vpc" "default" {
-  cidr_block = "10.0.0.0/16"
-}
+#################################
+## JENKINS RESOURCES           ##
+#################################
 
-# Create an internet gateway to give our subnet access to the outside world
-resource "aws_internet_gateway" "default" {
-  vpc_id = "${aws_vpc.default.id}"
-}
-
-# Grant the VPC internet access on its main route table
-resource "aws_route" "internet_access" {
-  route_table_id         = "${aws_vpc.default.main_route_table_id}"
-  destination_cidr_block = "0.0.0.0/0"
-  gateway_id             = "${aws_internet_gateway.default.id}"
-}
-
-# Create a subnet to launch our instances into
-resource "aws_subnet" "default" {
-  vpc_id                  = "${aws_vpc.default.id}"
-  cidr_block              = "10.0.1.0/24"
-  map_public_ip_on_launch = true
-}
-
-# A security group for the ELB so it is accessible via the web
-resource "aws_security_group" "elb" {
-  name        = "terraform_example_elb"
-  description = "Used in the terraform"
-  vpc_id      = "${aws_vpc.default.id}"
-
-  # HTTP access from anywhere
-  ingress {
-    from_port   = 80
-    to_port     = 80
-    protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
+resource "aws_instance" "jenkins" {
+  count = "${var.instance_count_jenkins}"
+  ami                    = "${var.ami_jenkins}"
+  instance_type          = "${var.instance_type_jenkins}"
+  key_name               = "${var.key_name_jenkins}"
+  monitoring             = "${var.monitoring_jenkins}"
+  iam_instance_profile   = "${var.iam_instance_profile_jenkins}"
+  vpc_security_group_ids = [ "${aws_security_group.sg_jenkins.id}" ]
+  depends_on = [ "aws_security_group.sg_jenkins" ]
+  
+  credit_specification {
+    cpu_credits = "${var.cpu_credits_jenkins}"
   }
 
-  # outbound internet access
-  egress {
-    from_port   = 0
-    to_port     = 0
-    protocol    = "-1"
-    cidr_blocks = ["0.0.0.0/0"]
+  tags = {
+    Name = "${var.name_jenkins}"
   }
 }
 
-# Our default security group to access
-# the instances over SSH and HTTP
-resource "aws_security_group" "default" {
-  name        = "terraform_example"
-  description = "Used in the terraform"
-  vpc_id      = "${aws_vpc.default.id}"
+resource "aws_security_group" "sg_jenkins" {
+  name        = "${var.sg_jenkins}"
+  description = "${var.sg_jenkins}"
+  vpc_id      = "${var.vpc_jenkins}"
 
-  # SSH access from anywhere
   ingress {
     from_port   = 22
     to_port     = 22
     protocol    = "tcp"
     cidr_blocks = ["0.0.0.0/0"]
+    ipv6_cidr_blocks = ["::/0"]
   }
 
-  # HTTP access from the VPC
   ingress {
     from_port   = 80
     to_port     = 80
     protocol    = "tcp"
-    cidr_blocks = ["10.0.0.0/16"]
-  }
-
-  # outbound internet access
-  egress {
-    from_port   = 0
-    to_port     = 0
-    protocol    = "-1"
     cidr_blocks = ["0.0.0.0/0"]
+    ipv6_cidr_blocks = ["::/0"]
+  }
+
+  ingress {
+    from_port   = 443
+    to_port     = 443
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+    ipv6_cidr_blocks = ["::/0"]
+  }
+
+  egress {
+    from_port       = 80
+    to_port         = 80
+    protocol        = "tcp"
+    cidr_blocks     = ["0.0.0.0/0"]
+    ipv6_cidr_blocks = ["::/0"]
+  }
+
+  egress {
+    from_port       = 443
+    to_port         = 443
+    protocol        = "tcp"
+    cidr_blocks     = ["0.0.0.0/0"]
+    ipv6_cidr_blocks = ["::/0"]
+  }
+
+  tags = {
+    Name = "${var.sg_jenkins}"
+  }
+}
+  
+resource "aws_eip" "ip_jenkins" {
+  instance = "${aws_instance.jenkins.id}"
+  depends_on = [ "aws_instance.jenkins" ]
+
+  tags = {
+    Name = "${var.eip_jenkins}"
   }
 }
 
-resource "aws_elb" "web" {
-  name = "terraform-example-elb"
+#################################
+## ANSIBLE RESOURCES           ##
+#################################
 
-  subnets         = ["${aws_subnet.default.id}"]
-  security_groups = ["${aws_security_group.elb.id}"]
-  instances       = ["${aws_instance.web.id}"]
+resource "aws_instance" "ansible" {
 
-  listener {
-    instance_port     = 80
-    instance_protocol = "http"
-    lb_port           = 80
-    lb_protocol       = "http"
+  count = "${var.instance_count_ansible}"
+  ami                    = "${var.ami_ansible}"
+  instance_type          = "${var.instance_type_ansible}"
+  key_name               = "${var.key_name_ansible}"
+  monitoring             = "${var.monitoring_ansible}"
+  iam_instance_profile   = "${var.iam_instance_profile_ansible}"
+  vpc_security_group_ids = [ "${aws_security_group.sg_ansible.id}" ]
+
+  credit_specification {
+    cpu_credits = "${var.cpu_credits_ansible}"
+  }
+
+  tags = {
+    Name = "${var.name_ansible}"
   }
 }
 
-resource "aws_key_pair" "auth" {
-  key_name   = "${var.key_name}"
-  public_key = "${file(var.public_key_path)}"
-}
+resource "aws_security_group" "sg_ansible" {
+  name        = "${var.sg_ansible}"
+  description = "${var.sg_ansible}"
+  vpc_id      = "${var.vpc_ansible}"
 
-resource "aws_instance" "web" {
-  # The connection block tells our provisioner how to
-  # communicate with the resource (instance)
-  connection {
-    # The default username for our AMI
-    user = "ubuntu"
-
-    # The connection will use the local SSH agent for authentication.
+  ingress {
+    from_port   = 22
+    to_port     = 22
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+    ipv6_cidr_blocks = ["::/0"]
   }
 
-  instance_type = "t2.micro"
+  ingress {
+    from_port   = 80
+    to_port     = 80
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+    ipv6_cidr_blocks = ["::/0"]
+  }
 
-  # Lookup the correct AMI based on the region
-  # we specified
-  ami = "${lookup(var.aws_amis, var.aws_region)}"
+  ingress {
+    from_port   = 443
+    to_port     = 443
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+    ipv6_cidr_blocks = ["::/0"]
+  }
 
-  # The name of our SSH keypair we created above.
-  key_name = "${aws_key_pair.auth.id}"
+  egress {
+    from_port       = 80
+    to_port         = 80
+    protocol        = "tcp"
+    cidr_blocks     = ["0.0.0.0/0"]
+    ipv6_cidr_blocks = ["::/0"]
+  }
 
-  # Our Security group to allow HTTP and SSH access
-  vpc_security_group_ids = ["${aws_security_group.default.id}"]
+  egress {
+    from_port       = 443
+    to_port         = 443
+    protocol        = "tcp"
+    cidr_blocks     = ["0.0.0.0/0"]
+    ipv6_cidr_blocks = ["::/0"]
+  }
 
-  # We're going to launch into the same subnet as our ELB. In a production
-  # environment it's more common to have a separate private subnet for
-  # backend instances.
-  subnet_id = "${aws_subnet.default.id}"
+  tags = {
+    Name = "${var.sg_ansible}"
+  }
+}
 
-  # We run a remote provisioner on the instance after creating it.
-  # In this case, we just install nginx and start it. By default,
-  # this should be on port 80
-  provisioner "remote-exec" {
-    inline = [
-      "sudo apt-get -y update",
-      "sudo apt-get -y install nginx",
-      "sudo service nginx start",
-    ]
+resource "aws_eip" "ip_ansible" {
+  instance = "${aws_instance.ansible.id}"
+  depends_on = [ "aws_instance.ansible" ]
+
+  tags = {
+    Name = "${var.eip_ansible}"
+  }
+}
+
+#################################
+## KUBERNETES RESOURCES        ##
+#################################
+
+resource "aws_instance" "kubernetes" {
+
+  count = "${var.instance_count_kubernetes}"
+  ami                    = "${var.ami_kubernetes}"
+  instance_type          = "${var.instance_type_kubernetes}"
+  key_name               = "${var.key_name_kubernetes}"
+  monitoring             = "${var.monitoring_kubernetes}"
+  iam_instance_profile   = "${var.iam_instance_profile_kubernetes}"
+  vpc_security_group_ids = [ "${aws_security_group.sg_kubernetes.id}" ]
+
+
+  credit_specification {
+    cpu_credits = "${var.cpu_credits_kubernetes}"
+  }
+
+  tags = {
+    Name = "${var.name_kubernetes}"
+  }
+}
+
+resource "aws_security_group" "sg_kubernetes" {
+  name        = "${var.sg_kubernetes}"
+  description = "${var.sg_kubernetes}"
+  vpc_id      = "${var.vpc_kubernetes}"
+
+  ingress {
+    from_port   = 22
+    to_port     = 22
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+    ipv6_cidr_blocks = ["::/0"]
+  }
+
+  ingress {
+    from_port   = 80
+    to_port     = 80
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+    ipv6_cidr_blocks = ["::/0"]
+  }
+
+  ingress {
+    from_port   = 443
+    to_port     = 443
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+    ipv6_cidr_blocks = ["::/0"]
+  }
+
+  egress {
+    from_port       = 80
+    to_port         = 80
+    protocol        = "tcp"
+    cidr_blocks     = ["0.0.0.0/0"]
+    ipv6_cidr_blocks = ["::/0"]
+  }
+
+  egress {
+    from_port       = 443
+    to_port         = 443
+    protocol        = "tcp"
+    cidr_blocks     = ["0.0.0.0/0"]
+    ipv6_cidr_blocks = ["::/0"]
+  }
+
+  tags = {
+    Name = "${var.sg_kubernetes}"
+  }
+}
+
+resource "aws_eip" "ip_kubernetes" {
+  instance = "${aws_instance.kubernetes.id}"
+  depends_on = [ "aws_instance.kubernetes" ]
+
+  tags = {
+    Name = "${var.eip_kubernetes}"
   }
 }
